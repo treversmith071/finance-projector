@@ -64,8 +64,13 @@ NETWORTH = os.path.join(_DATA, "networth.json")
 CONFIG = os.path.join(_DATA, "finance_config.json")
 # Baseline keys the onboarding UI is allowed to persist (never trust the page
 # blindly — only these are written to the config file).
+# The last three are the personal account identifiers classify() reads; they
+# aren't part of the client-side recompute, so changing them requires a
+# server-side dashboard rebuild (see do_POST /api/config).
 CONFIG_KEYS = ("rent", "biweekly_deposit", "k401_annual",
-               "receive_bonuses", "bonus_threshold")
+               "receive_bonuses", "bonus_threshold",
+               "account_holder_name", "savings_acct_suffixes", "spending_acct_suffix")
+CLASSIFY_KEYS = ("account_holder_name", "savings_acct_suffixes", "spending_acct_suffix")
 INPUT = os.path.join(_DATA, "transactions.csv")   # raw ingested export (gitignored)
 # Historical archive: one <YYYY>_transactions.csv per prior year. Survives the
 # data-hygiene purge (see purge_session_data) and drives the per-year tabs +
@@ -387,11 +392,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except (ValueError, json.JSONDecodeError):
                     existing = {}
             saved = {k: data[k] for k in CONFIG_KEYS if k in data}
+            # Did any classify()-affecting identifier actually change? If so the
+            # dashboard must be rebuilt server-side, since the client can't
+            # re-classify already-bucketed rows.
+            classify_changed = any(
+                k in saved and saved[k] != existing.get(k) for k in CLASSIFY_KEYS)
             existing.update(saved)
             with open(CONFIG, "w") as f:
                 json.dump(existing, f, indent=2)
                 f.write("\n")
-            return self._send(200, json.dumps({"ok": True, "saved": saved}))
+            regenerated = False
+            if classify_changed and os.path.exists(INPUT):
+                regenerated, _ = _rebuild_dashboard()
+            return self._send(200, json.dumps(
+                {"ok": True, "saved": saved, "regenerated": regenerated}))
         if path == "/api/ingest":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""

@@ -958,6 +958,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
            padding:28px; width:100%; max-width:420px; }
   .modal h2 { margin:0 0 4px; font-size:20px; }
   .modal .msub { color:var(--muted); font-size:13px; margin:0 0 22px; }
+  .modal .section-label { font-size:12px; font-weight:600; letter-spacing:.04em;
+           text-transform:uppercase; color:var(--muted); margin:26px 0 4px;
+           padding-top:20px; border-top:1px solid #262a36; }
+  .modal .section-label + .msub { margin:0 0 16px; }
   .field { margin-bottom:18px; }
   .field label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
   .field .hint { font-size:11px; color:var(--muted); margin-top:5px; }
@@ -965,9 +969,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .input-prefix > span { position:absolute; left:13px; top:50%;
                          transform:translateY(-50%); color:var(--muted); font-size:15px; }
   .modal .field .input-prefix input { padding-left:30px; }
-  .field input[type=number] { width:100%; background:var(--bg); border:1px solid #262a36;
+  .field input[type=number], .field input[type=text] {
+           width:100%; background:var(--bg); border:1px solid #262a36;
            border-radius:8px; color:var(--text); padding:10px 12px; font-size:15px; }
-  .field input[type=number]:focus { outline:none; border-color:var(--accent); }
+  .field input[type=number]:focus, .field input[type=text]:focus {
+           outline:none; border-color:var(--accent); }
   .field.inline { display:flex; align-items:center; justify-content:space-between; }
   .field.inline label { margin-bottom:0; }
   .switch { position:relative; width:46px; height:26px; flex:none; }
@@ -1121,6 +1127,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="input-prefix"><span>$</span>
         <input type="number" id="setBonusThreshold" step="100" min="0"></div>
       <div class="hint">Paychecks above this are treated as one-time bonuses.</div>
+    </div>
+    <div class="section-label">Account matching</div>
+    <p class="msub">Last-4 digits and name the classifier uses to tag transfers between your own accounts. Changing these re-classifies your transactions.</p>
+    <div class="field">
+      <label for="setSpendSuffix">Spending account (last 4)</label>
+      <input type="text" id="setSpendSuffix" inputmode="numeric" maxlength="4" placeholder="e.g. 5111">
+      <div class="hint">The account that pays your expenses.</div>
+    </div>
+    <div class="field">
+      <label for="setSaveSuffixes">Savings account(s) (last 4)</label>
+      <input type="text" id="setSaveSuffixes" placeholder="e.g. 5529, 1252">
+      <div class="hint">Comma-separated. Transfers here count as savings.</div>
+    </div>
+    <div class="field">
+      <label for="setHolder">Account holder name</label>
+      <input type="text" id="setHolder" placeholder="e.g. Jane Smith">
+      <div class="hint">Used to tag your Zelle / transfer / payee rows.</div>
     </div>
     <div class="modal-actions">
       <button class="btn-reset" id="resetAll">Reset &amp; start over</button>
@@ -2127,6 +2150,13 @@ const elK401 = document.getElementById('setK401');
 const elBonus = document.getElementById('setBonus');
 const elBonusThreshold = document.getElementById('setBonusThreshold');
 const bonusThresholdField = document.getElementById('bonusThresholdField');
+const elHolder = document.getElementById('setHolder');
+const elSpendSuffix = document.getElementById('setSpendSuffix');
+const elSaveSuffixes = document.getElementById('setSaveSuffixes');
+// The account identifiers live in finance_config.json (server-side), not in the
+// localStorage settings — they only affect Python's classify(). We load them
+// from the bridge when opening Settings and remember them to detect real edits.
+let accountCfg = {account_holder_name: '', savings_acct_suffixes: [], spending_acct_suffix: ''};
 
 function syncBonusVisibility() {
   bonusThresholdField.style.display = elBonus.checked ? '' : 'none';
@@ -2139,7 +2169,24 @@ function fillForm(s) {
   elBonusThreshold.value = s.bonus_threshold;
   syncBonusVisibility();
 }
-function openSettings() { fillForm(loadSettings()); overlay.classList.add('open'); }
+function fillAccountForm(cfg) {
+  accountCfg = {
+    account_holder_name: cfg.account_holder_name || '',
+    savings_acct_suffixes: Array.isArray(cfg.savings_acct_suffixes) ? cfg.savings_acct_suffixes : [],
+    spending_acct_suffix: cfg.spending_acct_suffix || '',
+  };
+  elHolder.value = accountCfg.account_holder_name;
+  elSpendSuffix.value = accountCfg.spending_acct_suffix;
+  elSaveSuffixes.value = accountCfg.savings_acct_suffixes.join(', ');
+}
+function openSettings() {
+  fillForm(loadSettings());
+  fillAccountForm({});                 // clear until the bridge responds
+  overlay.classList.add('open');
+  // Pull current account identifiers from the config file (bridge only; over
+  // file:// this fails and the fields stay blank, which is fine).
+  fetch('/api/config').then(r => r.json()).then(fillAccountForm).catch(() => {});
+}
 function closeSettings() { overlay.classList.remove('open'); }
 
 gearBtn.addEventListener('click', openSettings);
@@ -2172,7 +2219,13 @@ if (resetBtnEl) resetBtnEl.addEventListener('click', () => {
   fetch('/api/reset?all=1', {method: 'POST'}).then(finish).catch(finish);
 });
 
-document.getElementById('saveSettings').addEventListener('click', () => {
+// Parse a comma/space-separated list of 4-digit account suffixes, keeping only
+// digit-runs so "5529, 1252" and "5529 1252" both work.
+function parseSuffixes(str) {
+  return (str || '').split(/[^0-9]+/).filter(Boolean);
+}
+const saveBtn = document.getElementById('saveSettings');
+saveBtn.addEventListener('click', () => {
   const s = {
     rent: parseFloat(elRent.value) || 0,
     biweekly_deposit: parseFloat(elBiweek.value) || 0,
@@ -2181,8 +2234,37 @@ document.getElementById('saveSettings').addEventListener('click', () => {
     bonus_threshold: parseFloat(elBonusThreshold.value) || 0,
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-  closeSettings();
-  applySettings(s);   // live recompute + re-render
+
+  // Account identifiers: persist to the config file via the bridge. These drive
+  // Python's classify(), not the client recompute, so if they changed the bridge
+  // rebuilds the dashboard and we reload to show the re-classified data.
+  const acct = {
+    account_holder_name: elHolder.value.trim(),
+    spending_acct_suffix: parseSuffixes(elSpendSuffix.value)[0] || '',
+    savings_acct_suffixes: parseSuffixes(elSaveSuffixes.value),
+  };
+  const acctChanged = acct.account_holder_name !== accountCfg.account_holder_name
+    || acct.spending_acct_suffix !== accountCfg.spending_acct_suffix
+    || acct.savings_acct_suffixes.join(',') !== accountCfg.savings_acct_suffixes.join(',');
+
+  if (!acctChanged) {                    // nothing server-side changed
+    closeSettings();
+    applySettings(s);
+    return;
+  }
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+  const done = (reload) => {
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+    closeSettings();
+    if (reload) { location.reload(); } else { applySettings(s); }
+  };
+  fetch('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(acct)})
+    .then(r => r.json())
+    .then(res => done(!!res.regenerated))
+    .catch(() => done(false));   // bridge down (file://): keep client render
 });
 
 // ── First-run onboarding ─────────────────────────────────────────────────────
