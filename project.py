@@ -65,10 +65,13 @@ def classify(desc: str, amt: float) -> str:
 
     if "wealthfront" in d:                            return "INVEST_WEALTHFRONT"
     if "robinhood" in d:                              return "INVEST_ROBINHOOD"
-    if any(f"savings account xxxxxx{s}" in d for s in SAVINGS_ACCT_SUFFIXES):
-        return "SAVINGS_XFER"
-    if SPENDING_ACCT_SUFFIX and f"spending account xxxxxx{SPENDING_ACCT_SUFFIX}" in d:
-        return "SPEND_MAIN"
+    # Transfers between the user's own accounts are identified by the words in
+    # the description ("… transfer … Savings account …", "… transfer … Spending
+    # account …") — no account numbers needed. Requiring "transfer" avoids
+    # catching peer payments (e.g. a Zelle deposit that names an account). The
+    # mapping screen lets the user re-bucket these.
+    if "transfer" in d and "savings account" in d:    return "SAVINGS_XFER"
+    if "transfer" in d and "spending account" in d:   return "SPEND_MAIN"
 
     # Payroll: ADP TOTALSOURCE PAYROLL/DIRECT DEP (2026 + late 2025)
     # and ASF, DBA Insperi PAYROLL (early/mid 2025).
@@ -88,11 +91,10 @@ def classify(desc: str, amt: float) -> str:
     if "venmo cashout" in d or "venmo refund" in d:   return "VENMO_IN"
     if "venmo payment" in d or "venmo purchase" in d: return "VENMO_OUT"
 
-    # Zelle — peer-payment, treated like Venmo. "from <you>" = outbound.
+    # Zelle — peer-payment, treated like Venmo. Direction defaults from the
+    # amount sign; the mapping screen can re-bucket it.
     if "zelle payment" in d:
-        if ACCOUNT_HOLDER_FIRST and f"from {ACCOUNT_HOLDER_FIRST}" in d:
-            return "VENMO_OUT"
-        return "VENMO_IN"
+        return "VENMO_IN" if amt > 0 else "VENMO_OUT"
 
     # Gambling: sportsbooks, casinos, prediction markets, racing.
     if any(k in d for k in ("fd sptsbk", "fanduel", "draftkings",
@@ -109,15 +111,12 @@ def classify(desc: str, amt: float) -> str:
     if d.startswith("check paid"):                    return "DIRECT_EXP"
 
     if "echeck deposit" in d:                         return "OTHER_IN"
-    if ACCOUNT_HOLDER_FIRST and ACCOUNT_HOLDER_LAST \
-       and f"poly*{ACCOUNT_HOLDER_FIRST[:1]} {ACCOUNT_HOLDER_LAST}" in d:
-        return "OTHER_IN"
     if "requested transfer from" in d \
        and "ally bank" in d:                          return "OTHER_IN"
-    if ACCOUNT_HOLDER_NAME \
-       and f"requested transfer to {ACCOUNT_HOLDER_NAME}" in d: return "TD_XFER"
 
-    return "UNCLASSIFIED"
+    # Anything else defaults by amount sign (inflow → income, outflow → spending)
+    # and can be re-bucketed in the mapping screen.
+    return "OTHER_IN" if amt > 0 else "UNCLASSIFIED"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -177,8 +176,11 @@ def _split_line(line: str) -> list[str] | None:
     return None
 
 
-def load(path: str) -> list[Row]:
-    """Parse transactions from CSV, TSV, or Excel-pasted text."""
+def load(path: str, apply_buckets: bool = True) -> list[Row]:
+    """Parse transactions from CSV, TSV, or Excel-pasted text. When
+    apply_buckets is False the raw classify() category is kept (used to build the
+    mapping screen's groups); otherwise the user's group→bucket override is
+    applied."""
     out = []
     with open(path, newline="") as f:
         lines = f.readlines()
@@ -195,9 +197,47 @@ def load(path: str) -> list[Row]:
         except ValueError:
             continue
         desc = fields[4].strip().strip('"')
-        out.append(Row(d, amt, desc, classify(desc, amt)))
+        cat = classify(desc, amt)
+        if apply_buckets:
+            cat = apply_group_bucket(cat, group_key(desc))
+        out.append(Row(d, amt, desc, cat))
 
     return out
+
+
+def build_groups(path: str) -> list[dict]:
+    """Group parsed transactions by payee/destination for the mapping screen.
+    Each group carries a display label, row count, net + gross totals, and a
+    smart-default bucket (the natural bucket of its dominant category). The
+    user's saved override, if any, is surfaced as `bucket`."""
+    rows = load(path, apply_buckets=False)
+    agg: dict = {}
+    for r in rows:
+        key = group_key(r.desc)
+        g = agg.get(key)
+        if g is None:
+            g = agg[key] = {"key": key, "label": group_label(r.desc), "count": 0,
+                            "net": 0.0, "gross": 0.0, "_weight": defaultdict(float),
+                            "_catw": defaultdict(float), "sample": r.desc}
+        g["count"] += 1
+        g["net"] += r.amount
+        g["gross"] += abs(r.amount)
+        g["_weight"][default_bucket_for_cat(r.cat)] += abs(r.amount)
+        g["_catw"][r.cat] += abs(r.amount)
+    groups = []
+    for g in agg.values():
+        weights = g.pop("_weight")
+        catw = g.pop("_catw")
+        dominant_cat = max(catw, key=catw.get) if catw else ""
+        default = max(weights, key=weights.get) if weights else "spending"
+        # Venmo/gambling groups are netted automatically — not user-mappable.
+        g["auto"] = dominant_cat in NETTING_CATS
+        g["default_bucket"] = default
+        g["bucket"] = "auto" if g["auto"] else GROUP_BUCKET_MAP.get(g["key"], default)
+        groups.append(g)
+    # Biggest movers first so the user sorts the impactful groups up top.
+    groups.sort(key=lambda x: -x["gross"])
+    return groups
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -254,18 +294,84 @@ BONUS_THRESHOLD = None
 # should affect the current year only).
 SEASONAL_BONUS_THRESHOLD = 15000.0
 PAYCHECKS_PER_YEAR = 26
-# Account last-4 suffixes (and the Zelle self-name) that tag internal transfers
-# between your own accounts. Personal, so loaded from finance_config.json at
-# runtime and set on these module globals in main() before any classification.
-# Empty on a fresh clone — add your own in the config (see
-# finance_config.example.json) so the classifier recognizes your transfers.
-SAVINGS_ACCT_SUFFIXES: list = []   # brokerage/savings transfer accounts
-SPENDING_ACCT_SUFFIX: str = ""     # the account that pays expenses
-# Account-holder name (lowercased) used to tag self-transfers/payees. Derived in
-# main() from finance_config.json's "account_holder_name"; empty on a fresh clone.
-ACCOUNT_HOLDER_NAME: str = ""      # full name; matches "requested transfer to <name>"
-ACCOUNT_HOLDER_FIRST: str = ""     # first name; outbound Zelle reads "from <first>"
-ACCOUNT_HOLDER_LAST: str = ""      # last name; used in a payee matcher
+# User-defined mapping of transaction group -> financial bucket
+# ("spending" | "savings" | "income"), set in main() from finance_config.json's
+# "group_buckets". It's the successor to the old account-last-4/name matching:
+# instead of typing account numbers, the user sorts each payee/destination group
+# into a column in the ingest mapping screen. Applied in load() by remapping each
+# row's category, so compute()/compute_monthly()/build_primitives() and all the
+# mirrored client-side JS stay category-driven and unchanged.
+GROUP_BUCKET_MAP: dict = {}
+
+# Natural bucket of each fine category — used to seed the mapping screen's smart
+# defaults and to tell when a user override actually differs from the default.
+CAT_BUCKET = {
+    "SPEND_MAIN": "spending", "DIRECT_EXP": "spending", "RENT": "spending",
+    "VENMO_OUT": "spending", "GAMBLING_OUT": "spending",
+    "INVEST_WEALTHFRONT": "savings", "INVEST_ROBINHOOD": "savings",
+    "SAVINGS_XFER": "savings", "TD_XFER": "savings",
+    "PAYROLL": "income", "TAX_REFUND": "income", "INTEREST": "income",
+    "ATM_REIMB": "income", "OTHER_IN": "income", "SPLITWISE": "income",
+    "VENMO_IN": "income", "GAMBLING_IN": "income",
+    "UNCLASSIFIED": "spending",   # an unrecognized outflow reads as spending
+}
+# When a user override moves a row off its natural bucket, remap to a generic
+# category that sums into that bucket with no special (rent-shift / bonus /
+# netting) behavior, so only the deliberately-moved rows change.
+BUCKET_GENERIC = {"savings": "SAVINGS_XFER", "spending": "DIRECT_EXP",
+                  "income": "OTHER_IN"}
+# Venmo/gambling net inflows against outflows (governed by the net-venmo /
+# net-gambling conventions), so a single spending/savings/income bucket can't
+# represent them without breaking the wash. They're handled automatically and
+# shown read-only in the mapping screen.
+NETTING_CATS = {"VENMO_IN", "VENMO_OUT", "GAMBLING_IN", "GAMBLING_OUT"}
+
+
+def group_key(desc: str) -> str:
+    """Collapse a raw description to a stable payee/destination key so per-row
+    noise (dates, amounts, reference/store numbers) doesn't split one payee into
+    many groups. A trailing 'account xxxxxx1234' suffix is preserved as ' #1234'
+    so distinct transfer destinations stay distinct (this replaces the old
+    account-last-4 matching)."""
+    d = re.sub(r"\s+", " ", desc.strip().lower())
+    m = re.search(r"account x*(\d{4})\b", d)
+    acct = m.group(1) if m else None
+    d = re.sub(r"x{2,}\d+", " ", d)                               # masked numbers
+    d = re.sub(r"\b\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b", " ", d)   # dates
+    d = re.sub(r"[#*]?\d{3,}", " ", d)                            # ref/store nums
+    d = re.sub(r"[^a-z ]+", " ", d)                               # punctuation
+    tokens = re.sub(r"\s+", " ", d).strip().split()
+    key = " ".join(tokens[:5]) if tokens else "misc"
+    return f"{key} #{acct}" if acct else key
+
+
+def group_label(desc: str) -> str:
+    """Human-friendly title for a group card in the mapping screen."""
+    k = group_key(desc)
+    k = re.sub(r" #(\d{4})$", lambda mm: " …" + mm.group(1), k)
+    return k[:1].upper() + k[1:] if k else k
+
+
+def default_bucket_for_cat(cat: str) -> str:
+    return CAT_BUCKET.get(cat, "spending")
+
+
+def apply_group_bucket(cat: str, key: str) -> str:
+    """Return the effective category after applying any user bucket override for
+    this group. Keeps the fine category (and its special handling) when the
+    chosen bucket matches the category's natural bucket; otherwise remaps to a
+    generic category for the chosen bucket."""
+    if cat in NETTING_CATS:
+        return cat                       # netted automatically; never remapped
+    chosen = GROUP_BUCKET_MAP.get(key)
+    if cat == "UNCLASSIFIED":
+        # An unrecognized outflow only touches main_accum, which would leave the
+        # savings/spending identity short. Resolve it into a real bucket —
+        # spending by default — so nothing is silently uncounted.
+        return BUCKET_GENERIC.get(chosen or "spending", "DIRECT_EXP")
+    if not chosen or chosen == default_bucket_for_cat(cat):
+        return cat
+    return BUCKET_GENERIC.get(chosen, cat)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # Writable in a distributed app (user can drop <YYYY>_transactions.csv here);
 # same repo-local path as before when running from source.
@@ -985,6 +1091,30 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .switch input:checked + .slider { background:var(--accent); }
   .switch input:checked + .slider::before { transform:translateX(20px); }
   .modal-actions { display:flex; gap:10px; align-items:center; margin-top:24px; }
+  /* Transaction mapping modal */
+  .modal.modal-wide { max-width:940px; }
+  .map-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .map-col { display:flex; flex-direction:column; min-width:0; }
+  .map-col-head { display:flex; align-items:center; gap:7px; font-size:13px;
+                  font-weight:600; color:var(--text); margin-bottom:8px; }
+  .map-col-head .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .dot.spend { background:#ff8f6b; } .dot.save { background:#39d3bb; } .dot.income { background:#7c5cff; }
+  .map-drop { flex:1; min-height:320px; max-height:52vh; overflow-y:auto;
+              background:var(--bg); border:1px solid #262a36; border-radius:12px;
+              padding:8px; display:flex; flex-direction:column; gap:7px; transition:.12s; }
+  .map-drop.over { border-color:var(--accent); background:#191d2b; }
+  .map-card { background:var(--card); border:1px solid #2b2f3d; border-radius:9px;
+              padding:9px 11px; cursor:grab; user-select:none; }
+  .map-card:active { cursor:grabbing; }
+  .map-card.dragging { opacity:.4; }
+  .map-card .mc-label { font-size:13px; color:var(--text); font-weight:600;
+              word-break:break-word; line-height:1.25; }
+  .map-card .mc-meta { font-size:11px; color:var(--muted); margin-top:3px; }
+  .map-auto-note { color:var(--muted); font-size:12px; margin:0 0 10px; }
+  .map-auto-list { display:flex; flex-wrap:wrap; gap:7px; }
+  .map-auto-list .chip { background:var(--bg); border:1px solid #262a36; border-radius:20px;
+              padding:5px 11px; font-size:12px; color:var(--muted); }
+  @media (max-width:720px){ .map-cols { grid-template-columns:1fr; } .map-drop { min-height:120px; } }
   .btn { border-radius:9px; padding:9px 18px; font-size:14px; font-weight:600;
          cursor:pointer; border:1px solid #262a36; }
   .btn-secondary { background:transparent; color:var(--muted); }
@@ -1128,22 +1258,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <input type="number" id="setBonusThreshold" step="100" min="0"></div>
       <div class="hint">Paychecks above this are treated as one-time bonuses.</div>
     </div>
-    <div class="section-label">Account matching</div>
-    <p class="msub">Last-4 digits and name the classifier uses to tag transfers between your own accounts. Changing these re-classifies your transactions.</p>
+    <div class="section-label">Transaction mapping</div>
+    <p class="msub">Sort your transaction groups into Spending, Savings &amp; Investing, or Income.</p>
     <div class="field">
-      <label for="setSpendSuffix">Spending account (last 4)</label>
-      <input type="text" id="setSpendSuffix" inputmode="numeric" maxlength="4" placeholder="e.g. 5111">
-      <div class="hint">The account that pays your expenses.</div>
-    </div>
-    <div class="field">
-      <label for="setSaveSuffixes">Savings account(s) (last 4)</label>
-      <input type="text" id="setSaveSuffixes" placeholder="e.g. 5529, 1252">
-      <div class="hint">Comma-separated. Transfers here count as savings.</div>
-    </div>
-    <div class="field">
-      <label for="setHolder">Account holder name</label>
-      <input type="text" id="setHolder" placeholder="e.g. Jane Smith">
-      <div class="hint">Used to tag your Zelle / transfer / payee rows.</div>
+      <button class="btn btn-secondary" id="editMapping" type="button">Edit transaction mapping…</button>
     </div>
     <div class="modal-actions">
       <button class="btn-reset" id="resetAll">Reset &amp; start over</button>
@@ -1187,6 +1305,35 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary" id="finishOnboarding" style="margin-left:auto">Get started</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="mappingOverlay">
+  <div class="modal modal-wide">
+    <h2>Sort your transactions</h2>
+    <p class="msub">Drag each group into how it should count toward your numbers. We've pre-sorted the ones we recognize — adjust any you disagree with, then click Done.</p>
+    <div class="map-cols">
+      <div class="map-col">
+        <div class="map-col-head"><span class="dot spend"></span>Spending</div>
+        <div class="map-drop" data-bucket="spending" id="col-spending"></div>
+      </div>
+      <div class="map-col">
+        <div class="map-col-head"><span class="dot save"></span>Savings &amp; Investing</div>
+        <div class="map-drop" data-bucket="savings" id="col-savings"></div>
+      </div>
+      <div class="map-col">
+        <div class="map-col-head"><span class="dot income"></span>Income</div>
+        <div class="map-drop" data-bucket="income" id="col-income"></div>
+      </div>
+    </div>
+    <div id="mapAuto" style="display:none">
+      <div class="section-label">Auto-handled (netted)</div>
+      <p class="map-auto-note">Venmo &amp; gambling net inflows against outflows automatically.</p>
+      <div class="map-auto-list" id="mapAutoList"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="cancelMapping">Cancel</button>
+      <button class="btn btn-primary" id="doneMapping" style="margin-left:auto">Done</button>
     </div>
   </div>
 </div>
@@ -2150,13 +2297,6 @@ const elK401 = document.getElementById('setK401');
 const elBonus = document.getElementById('setBonus');
 const elBonusThreshold = document.getElementById('setBonusThreshold');
 const bonusThresholdField = document.getElementById('bonusThresholdField');
-const elHolder = document.getElementById('setHolder');
-const elSpendSuffix = document.getElementById('setSpendSuffix');
-const elSaveSuffixes = document.getElementById('setSaveSuffixes');
-// The account identifiers live in finance_config.json (server-side), not in the
-// localStorage settings — they only affect Python's classify(). We load them
-// from the bridge when opening Settings and remember them to detect real edits.
-let accountCfg = {account_holder_name: '', savings_acct_suffixes: [], spending_acct_suffix: ''};
 
 function syncBonusVisibility() {
   bonusThresholdField.style.display = elBonus.checked ? '' : 'none';
@@ -2169,23 +2309,9 @@ function fillForm(s) {
   elBonusThreshold.value = s.bonus_threshold;
   syncBonusVisibility();
 }
-function fillAccountForm(cfg) {
-  accountCfg = {
-    account_holder_name: cfg.account_holder_name || '',
-    savings_acct_suffixes: Array.isArray(cfg.savings_acct_suffixes) ? cfg.savings_acct_suffixes : [],
-    spending_acct_suffix: cfg.spending_acct_suffix || '',
-  };
-  elHolder.value = accountCfg.account_holder_name;
-  elSpendSuffix.value = accountCfg.spending_acct_suffix;
-  elSaveSuffixes.value = accountCfg.savings_acct_suffixes.join(', ');
-}
 function openSettings() {
   fillForm(loadSettings());
-  fillAccountForm({});                 // clear until the bridge responds
   overlay.classList.add('open');
-  // Pull current account identifiers from the config file (bridge only; over
-  // file:// this fails and the fields stay blank, which is fine).
-  fetch('/api/config').then(r => r.json()).then(fillAccountForm).catch(() => {});
 }
 function closeSettings() { overlay.classList.remove('open'); }
 
@@ -2219,11 +2345,6 @@ if (resetBtnEl) resetBtnEl.addEventListener('click', () => {
   fetch('/api/reset?all=1', {method: 'POST'}).then(finish).catch(finish);
 });
 
-// Parse a comma/space-separated list of 4-digit account suffixes, keeping only
-// digit-runs so "5529, 1252" and "5529 1252" both work.
-function parseSuffixes(str) {
-  return (str || '').split(/[^0-9]+/).filter(Boolean);
-}
 const saveBtn = document.getElementById('saveSettings');
 saveBtn.addEventListener('click', () => {
   const s = {
@@ -2234,37 +2355,97 @@ saveBtn.addEventListener('click', () => {
     bonus_threshold: parseFloat(elBonusThreshold.value) || 0,
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  closeSettings();
+  applySettings(s);   // live recompute + re-render
+});
 
-  // Account identifiers: persist to the config file via the bridge. These drive
-  // Python's classify(), not the client recompute, so if they changed the bridge
-  // rebuilds the dashboard and we reload to show the re-classified data.
-  const acct = {
-    account_holder_name: elHolder.value.trim(),
-    spending_acct_suffix: parseSuffixes(elSpendSuffix.value)[0] || '',
-    savings_acct_suffixes: parseSuffixes(elSaveSuffixes.value),
-  };
-  const acctChanged = acct.account_holder_name !== accountCfg.account_holder_name
-    || acct.spending_acct_suffix !== accountCfg.spending_acct_suffix
-    || acct.savings_acct_suffixes.join(',') !== accountCfg.savings_acct_suffixes.join(',');
+// Re-open the transaction mapping screen (defined below) from Settings so the
+// user can re-sort groups without re-importing.
+document.getElementById('editMapping').addEventListener('click', () => {
+  closeSettings();
+  openMapping();
+});
 
-  if (!acctChanged) {                    // nothing server-side changed
-    closeSettings();
-    applySettings(s);
-    return;
-  }
-  saveBtn.disabled = true;
-  saveBtn.textContent = 'Saving…';
-  const done = (reload) => {
-    saveBtn.disabled = false;
-    saveBtn.textContent = 'Save';
-    closeSettings();
-    if (reload) { location.reload(); } else { applySettings(s); }
-  };
+// ── Transaction mapping (3-column drag sort) ────────────────────────────────
+// Groups are dragged between Spending / Savings & Investing / Income. Saving
+// POSTs group_buckets to the bridge, which re-classifies (server-side) and we
+// reload. Venmo/gambling groups are auto-netted and shown read-only.
+const mapOverlay = document.getElementById('mappingOverlay');
+let mapDragEl = null;
+let mapFromIngest = false;   // opened right after a data import (page not yet refreshed)
+function mapMoney(n) {
+  return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+}
+function mapCard(g) {
+  const el = document.createElement('div');
+  el.className = 'map-card';
+  el.draggable = true;
+  el.dataset.key = g.key;
+  const lab = document.createElement('div'); lab.className = 'mc-label'; lab.textContent = g.label;
+  const meta = document.createElement('div'); meta.className = 'mc-meta';
+  meta.textContent = g.count + (g.count === 1 ? ' txn · net ' : ' txns · net ') + mapMoney(g.net);
+  el.appendChild(lab); el.appendChild(meta);
+  el.addEventListener('dragstart', e => {
+    mapDragEl = el; el.classList.add('dragging');
+    try { e.dataTransfer.setData('text/plain', g.key); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+  });
+  el.addEventListener('dragend', () => { el.classList.remove('dragging'); mapDragEl = null; });
+  return el;
+}
+function renderMapping(groups) {
+  ['spending', 'savings', 'income'].forEach(b => { document.getElementById('col-' + b).innerHTML = ''; });
+  const autoList = document.getElementById('mapAutoList');
+  autoList.innerHTML = '';
+  let hasAuto = false;
+  (groups || []).forEach(g => {
+    if (g.auto) {
+      hasAuto = true;
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = g.label + ' · ' + mapMoney(g.net);
+      autoList.appendChild(chip);
+      return;
+    }
+    const b = g.bucket && g.bucket !== 'auto' ? g.bucket : (g.default_bucket || 'spending');
+    (document.getElementById('col-' + b) || document.getElementById('col-spending')).appendChild(mapCard(g));
+  });
+  document.getElementById('mapAuto').style.display = hasAuto ? '' : 'none';
+}
+document.querySelectorAll('.map-drop').forEach(zone => {
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('over');
+    if (mapDragEl) zone.appendChild(mapDragEl);
+  });
+});
+function collectMapping() {
+  const m = {};
+  document.querySelectorAll('.map-drop').forEach(zone => {
+    zone.querySelectorAll('.map-card').forEach(c => { m[c.dataset.key] = zone.dataset.bucket; });
+  });
+  return m;
+}
+function openMapping(groups) {
+  if (groups) { mapFromIngest = true; renderMapping(groups); mapOverlay.classList.add('open'); return; }
+  mapFromIngest = false;
+  fetch('/api/groups').then(r => r.json()).then(d => {
+    renderMapping(d.groups || []); mapOverlay.classList.add('open');
+  }).catch(() => {});
+}
+document.getElementById('cancelMapping').addEventListener('click', () => {
+  mapOverlay.classList.remove('open');
+  // After an import the page still shows the pre-import data behind the modal —
+  // reload so the freshly-loaded (default-mapped) dashboard is shown.
+  if (mapFromIngest) location.reload();
+});
+document.getElementById('doneMapping').addEventListener('click', () => {
+  const btn = document.getElementById('doneMapping');
+  btn.disabled = true; btn.textContent = 'Saving…';
   fetch('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(acct)})
-    .then(r => r.json())
-    .then(res => done(!!res.regenerated))
-    .catch(() => done(false));   // bridge down (file://): keep client render
+      body: JSON.stringify({group_buckets: collectMapping()})})
+    .then(r => r.json()).then(() => location.reload())
+    .catch(() => location.reload());
 });
 
 // ── First-run onboarding ─────────────────────────────────────────────────────
@@ -2516,8 +2697,15 @@ if (NEEDS_ONBOARDING && !hasSavedSettings()) {
     fetch('/api/ingest', {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: text})
       .then(r => r.json()).then(d => {
         if (d.ok) {
-          msgEl.textContent = (d.summary || ('Loaded ' + d.rows + ' rows')) + (d.needs_current ? '' : ' — refreshing…');
-          if (d.needs_current) { goEl.disabled = false; } else { setTimeout(() => location.reload(), 900); }
+          if (d.needs_current) { msgEl.textContent = d.summary || 'Loaded'; goEl.disabled = false; }
+          else if (d.groups && d.groups.length) {
+            // Sort the transactions before showing the dashboard.
+            ov.classList.remove('open');
+            openMapping(d.groups);
+          } else {
+            msgEl.textContent = (d.summary || ('Loaded ' + d.rows + ' rows')) + ' — refreshing…';
+            setTimeout(() => location.reload(), 900);
+          }
         }
         else { goEl.disabled = false; msgEl.textContent = 'Error: ' + (d.error || 'failed'); }
       }).catch(() => { goEl.disabled = false; msgEl.textContent = 'No bridge running — start dashboard_server.py.'; });
@@ -2886,18 +3074,14 @@ def main(argv: list[str] | None = None) -> int:
     # to finance_config.json via the local bridge. In that case we still build
     # the dashboard (with placeholder zeros the UI overrides) but mark it for
     # onboarding; the client-side recompute fills in real numbers on submit.
-    global BONUS_THRESHOLD, SAVINGS_ACCT_SUFFIXES, SPENDING_ACCT_SUFFIX
-    global ACCOUNT_HOLDER_NAME, ACCOUNT_HOLDER_FIRST, ACCOUNT_HOLDER_LAST
+    global BONUS_THRESHOLD, GROUP_BUCKET_MAP
     cfg = load_local_config()
 
-    # Personal account identifiers used by classify() — kept out of the source
-    # (which is public) and read from the machine-local config instead.
-    SAVINGS_ACCT_SUFFIXES = [str(s).lower() for s in cfg.get("savings_acct_suffixes", [])]
-    SPENDING_ACCT_SUFFIX = str(cfg.get("spending_acct_suffix", "") or "").lower()
-    ACCOUNT_HOLDER_NAME = str(cfg.get("account_holder_name", "") or "").strip().lower()
-    _name_parts = ACCOUNT_HOLDER_NAME.split()
-    ACCOUNT_HOLDER_FIRST = _name_parts[0] if _name_parts else ""
-    ACCOUNT_HOLDER_LAST = _name_parts[-1] if len(_name_parts) > 1 else ""
+    # User's group→bucket mapping (from the ingest mapping screen), applied by
+    # load()/apply_group_bucket() to sort each payee group into spending /
+    # savings / income. Keys are group_key()s; values are the bucket names.
+    gb = cfg.get("group_buckets", {})
+    GROUP_BUCKET_MAP = {str(k): str(v) for k, v in gb.items()} if isinstance(gb, dict) else {}
 
     rent = args.rent if args.rent is not None else cfg.get("rent")
     biweekly = (args.biweekly_deposit if args.biweekly_deposit is not None

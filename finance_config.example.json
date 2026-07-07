@@ -1,12 +1,10 @@
 {
   "_comment": "Machine-local baseline figures for the finance projector. This file (finance_config.json, same folder) is git-ignored so your real numbers stay on this machine and are never pushed to the remote. You normally never edit it by hand: on a fresh clone the dashboard shows a first-run onboarding form and writes your answers here via the local bridge server. 'bonus_threshold' is only used when 'receive_bonuses' is true; 'biweekly_deposit' is 0 if W-2 pay doesn't go to additional accounts.",
-  "_comment_accounts": "The next three are personal identifiers the classifier uses to tag internal transfers in your CSV; they are kept out of the (public) source and read from here. 'account_holder_name' is your full name as it appears in transfer/payee descriptions (e.g. 'requested transfer to <name>' and outbound Zelle 'from <first name>'). 'savings_acct_suffixes' are the last-4 digits of accounts whose transfers count as SAVINGS (e.g. brokerage/savings). 'spending_acct_suffix' is the last-4 of the account that pays expenses. Leave blank/empty to skip that rule.",
+  "_comment_mapping": "'group_buckets' is the transaction mapping set on the ingest screen: it maps each payee/destination group (a group_key) to 'spending', 'savings', or 'income'. The classifier reads it to sort transfers between your own accounts — the successor to the old account-last-4 fields. You never edit it by hand; drag groups in the mapping screen and it's written here.",
   "rent": 0,
   "biweekly_deposit": 0,
   "k401_annual": 0,
   "receive_bonuses": false,
   "bonus_threshold": 0,
-  "account_holder_name": "",
-  "savings_acct_suffixes": [],
-  "spending_acct_suffix": ""
+  "group_buckets": {}
 }

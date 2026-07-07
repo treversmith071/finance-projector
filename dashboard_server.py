@@ -62,15 +62,14 @@ FAVICON = os.path.join(_RES, "favicon.png")       # square tab icon (PNG)
 FAVICON_ICO = os.path.join(_RES, "favicon.ico")   # square tab icon (multi-size ICO)
 NETWORTH = os.path.join(_DATA, "networth.json")
 CONFIG = os.path.join(_DATA, "finance_config.json")
-# Baseline keys the onboarding UI is allowed to persist (never trust the page
-# blindly — only these are written to the config file).
-# The last three are the personal account identifiers classify() reads; they
-# aren't part of the client-side recompute, so changing them requires a
+# Baseline keys the onboarding/settings UI is allowed to persist (never trust the
+# page blindly — only these are written to the config file). "group_buckets" is
+# the user's transaction-mapping (group→spending/savings/income); it drives
+# classify() rather than the client-side recompute, so a change to it requires a
 # server-side dashboard rebuild (see do_POST /api/config).
 CONFIG_KEYS = ("rent", "biweekly_deposit", "k401_annual",
-               "receive_bonuses", "bonus_threshold",
-               "account_holder_name", "savings_acct_suffixes", "spending_acct_suffix")
-CLASSIFY_KEYS = ("account_holder_name", "savings_acct_suffixes", "spending_acct_suffix")
+               "receive_bonuses", "bonus_threshold", "group_buckets")
+CLASSIFY_KEYS = ("group_buckets",)
 INPUT = os.path.join(_DATA, "transactions.csv")   # raw ingested export (gitignored)
 # Historical archive: one <YYYY>_transactions.csv per prior year. Survives the
 # data-hygiene purge (see purge_session_data) and drives the per-year tabs +
@@ -194,6 +193,17 @@ def _rebuild_dashboard(input_path=None, extra_args=()):
         return True, ""
     tail = (err.getvalue() or out.getvalue() or "generation failed").strip().splitlines()
     return False, (tail[-1] if tail else "generation failed")
+
+
+def _current_groups():
+    """Payee/destination groups for the live dataset, for the mapping screen.
+    Empty list if there's nothing loaded or grouping fails."""
+    if not os.path.exists(INPUT):
+        return []
+    try:
+        return project.build_groups(INPUT)
+    except Exception:
+        return []
 
 
 def _latest_archive_year():
@@ -361,6 +371,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/sync-status":
             with _lock:
                 return self._send(200, json.dumps(_sync))
+        if path == "/api/groups":
+            return self._send(200, json.dumps({"groups": _current_groups()}))
         if path == "/api/config":
             if not os.path.exists(CONFIG):
                 return self._send(200, json.dumps({}))
@@ -461,7 +473,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 summary = "Rebuilt dashboard"
             return self._send(200, json.dumps({
                 "ok": True, "rows": cur_count, "archived": archived,
-                "summary": summary}))
+                "summary": summary, "groups": _current_groups()}))
         if path == "/api/reset":
             # ?all=1 is a full wipe: also clears the loaded transactions (current
             # year) and the prior-year archive. Without it, only the baseline
