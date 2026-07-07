@@ -534,15 +534,18 @@ def purge_session_data():
     sensitive lingers while the app isn't running. Everything cleared here is
     regenerated on the next run from a fresh export. Deliberately left untouched:
     the sanctioned historical archive in prior_years/, the reusable baseline
-    config (finance_config.json), and the last-synced net worth (networth.json)
-    so the Net-worth card still shows your latest figure after a restart.
+    config (finance_config.json), the last-synced net worth (networth.json) so
+    the Net-worth card still shows your latest figure after a restart, and the
+    Empower browser profile (empower_profile/) — retaining it keeps Empower's
+    device-trust cookie so net-worth sync doesn't force a new-device MFA every
+    launch. It's a bearer credential (gitignored, kept chmod 600); "Reset
+    everything" still wipes it on demand.
     """
     for p in (INPUT, DASHBOARD, TMP_INPUT):
         try:
             os.remove(p)
         except OSError:
             pass
-    shutil.rmtree(EMPOWER_PROFILE, ignore_errors=True)
 
 
 def _on_sigterm(signum, frame):
