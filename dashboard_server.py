@@ -373,11 +373,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("expected an object")
             except (ValueError, json.JSONDecodeError) as e:
                 return self._send(400, json.dumps({"error": str(e)}))
-            out = {k: data[k] for k in CONFIG_KEYS if k in data}
+            # Merge into any existing config so keys the onboarding UI doesn't
+            # manage — e.g. the personal account identifiers classify() reads
+            # (account_holder_name, savings_acct_suffixes, spending_acct_suffix)
+            # — survive a settings save instead of being dropped.
+            existing = {}
+            if os.path.exists(CONFIG):
+                try:
+                    with open(CONFIG, "rb") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        existing = loaded
+                except (ValueError, json.JSONDecodeError):
+                    existing = {}
+            saved = {k: data[k] for k in CONFIG_KEYS if k in data}
+            existing.update(saved)
             with open(CONFIG, "w") as f:
-                json.dump(out, f, indent=2)
+                json.dump(existing, f, indent=2)
                 f.write("\n")
-            return self._send(200, json.dumps({"ok": True, "saved": out}))
+            return self._send(200, json.dumps({"ok": True, "saved": saved}))
         if path == "/api/ingest":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
