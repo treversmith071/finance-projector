@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.pyc
+
+# Playwright virtualenv
+.venv/
+
+# Personal financial data — never commit
+transactions.csv
+networth.json
+finance_config.json
+prior_years/
+monthly_savings_*.html
+
+# Empower session credentials (secrets / PII)
+empower_session.json
+empower_state.json
+empower_profile/
+
+# Generated macOS app bundle + frozen build artifacts
+FinProject.app/
+dist/
+build/
+FinProject.spec

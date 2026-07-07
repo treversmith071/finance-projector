@@ -1,0 +1,6 @@
+{
+  "cookie": "PASTE_COOKIE_HERE (getAccounts2 request: Headers tab > Request Headers > Cookie -- the full value)",
+  "csrf": "PASTE_CSRF_HERE (getAccounts2 request: Payload tab > csrf value)",
+  "user_agent": "PASTE_USER_AGENT_HERE (getAccounts2 request: Headers tab > Request Headers > user-agent) -- recommended; Cloudflare binds cf_clearance to this plus your IP",
+  "last_server_change_id": -1
+}
