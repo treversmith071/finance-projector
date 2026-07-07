@@ -329,7 +329,9 @@ if(!text){msg.textContent='Drop a file or paste rows first.';return;}
 go.disabled=true;msg.textContent='Building…';
 fetch('/api/ingest',{method:'POST',headers:{'Content-Type':'text/plain'},body:text})
 .then(r=>r.json()).then(d=>{if(d.ok){msg.textContent=(d.summary||('Loaded '+d.rows+' rows'))+(d.needs_current?'':' — opening…');
-if(d.needs_current){go.disabled=false;}else{setTimeout(()=>location.href='/',900);}}
+// Go to the dashboard with ?map=1 so it opens the transaction-sorting screen
+// (the modal lives on the dashboard page, not this welcome page).
+if(d.needs_current){go.disabled=false;}else{setTimeout(()=>location.href='/?map=1',900);}}
 else{go.disabled=false;msg.textContent='Error: '+(d.error||'failed');}})
 .catch(()=>{go.disabled=false;msg.textContent='Server error.';});};
 </script></body></html>"""

@@ -2455,6 +2455,11 @@ document.getElementById('doneMapping').addEventListener('click', () => {
 // via the local bridge (POST /api/config) so future CLI runs pick them up, and
 // recompute the panels client-side from the entered values.
 const NEEDS_ONBOARDING = %%NEEDS_ONBOARDING%%;
+// The welcome page's "Build dashboard" (and a fresh import) send us here with
+// ?map=1 so we open the transaction-sorting screen once the page is ready
+// (after onboarding, if that's also showing). Clean the URL so a refresh won't.
+const wantMapping = new URLSearchParams(location.search).has('map');
+if (wantMapping) { try { history.replaceState(null, '', location.pathname); } catch (e) {} }
 const obOverlay = document.getElementById('onboardingOverlay');
 const obRent = document.getElementById('obRent');
 const obHasOther = document.getElementById('obHasOther');
@@ -2501,6 +2506,7 @@ obFinish.addEventListener('click', () => {
     body: JSON.stringify(s)}).catch(() => {});
   obOverlay.classList.remove('open');
   applySettings(s);
+  if (wantMapping) openMapping();   // sort transactions after baseline setup
 });
 
 // Gate: onboard on a fresh setup unless the user already answered here.
@@ -2510,6 +2516,7 @@ if (NEEDS_ONBOARDING && !hasSavedSettings()) {
   renderAll(PANELS_PY);   // placeholder render behind the overlay
 } else {
   applySettings(loadSettings());   // honors any previously-saved overrides
+  if (wantMapping) openMapping();   // came from "Build dashboard" / import
 }
 
 // ── Net worth card ────────────────────────────────────────────────────────────
