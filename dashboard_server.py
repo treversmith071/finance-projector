@@ -406,6 +406,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except (ValueError, json.JSONDecodeError):
                     existing = {}
             saved = {k: data[k] for k in CONFIG_KEYS if k in data}
+            # group_buckets is merged into the existing mapping (not replaced), so
+            # a partial save — e.g. only the net-new groups from a re-import —
+            # doesn't wipe the user's prior choices.
+            if isinstance(saved.get("group_buckets"), dict):
+                merged = dict(existing.get("group_buckets") or {})
+                merged.update(saved["group_buckets"])
+                saved["group_buckets"] = merged
             # Did any classify()-affecting identifier actually change? If so the
             # dashboard must be rebuilt server-side, since the client can't
             # re-classify already-bucketed rows.

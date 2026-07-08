@@ -233,6 +233,9 @@ def build_groups(path: str) -> list[dict]:
         # Venmo/gambling groups are netted automatically — not user-mappable.
         g["auto"] = dominant_cat in NETTING_CATS
         g["default_bucket"] = default
+        # mapped = the user has already sorted this group (its key is saved).
+        # Lets the UI prompt only for net-new groups on a re-import.
+        g["mapped"] = g["key"] in GROUP_BUCKET_MAP
         g["bucket"] = "auto" if g["auto"] else GROUP_BUCKET_MAP.get(g["key"], default)
         groups.append(g)
     # Biggest movers first so the user sorts the impactful groups up top.
@@ -1280,7 +1283,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="section-label">Transaction mapping</div>
     <p class="msub">Sort your transaction groups into Spending, Savings &amp; Investing, or Income.</p>
     <div class="field">
-      <button class="btn btn-secondary" id="editMapping" type="button">Edit transaction mapping…</button>
+      <button class="btn btn-primary" id="editMapping" type="button">Edit Tx Mapping</button>
     </div>
     <div class="modal-actions">
       <button class="btn-reset" id="resetAll">Reset &amp; start over</button>
@@ -2535,19 +2538,28 @@ obFinish.addEventListener('click', () => {
   applySettings(s);
 });
 
-// Gate. When we arrived from a data load (?map=1), sort transactions FIRST; the
-// reload after Done/Cancel then falls through to onboarding if baselines are
-// still missing. Otherwise onboard (fresh setup) or just render.
+function normalGate() {
+  if (NEEDS_ONBOARDING && !hasSavedSettings()) {
+    obValidate();
+    obOverlay.classList.add('open');
+    renderAll(PANELS_PY);   // placeholder render behind the overlay
+  } else {
+    applySettings(loadSettings());   // honors any previously-saved overrides
+  }
+}
+// Gate. When we arrived from a data load (?map=1), sort transactions FIRST — but
+// only if the file introduced net-new groups; otherwise skip straight to the
+// normal gate. After the mapping's Done/Cancel reload (no ?map) we fall through
+// to onboarding if baselines are still missing.
 if (wantMapping) {
-  if (NEEDS_ONBOARDING && !hasSavedSettings()) renderAll(PANELS_PY);
-  else applySettings(loadSettings());
-  openMapping(null, true);
-} else if (NEEDS_ONBOARDING && !hasSavedSettings()) {
-  obValidate();
-  obOverlay.classList.add('open');
-  renderAll(PANELS_PY);   // placeholder render behind the overlay
+  renderAll(PANELS_PY);   // placeholder behind whatever comes next
+  fetch('/api/groups').then(r => r.json()).then(d => {
+    const newGroups = (d.groups || []).filter(g => !g.auto && !g.mapped);
+    if (newGroups.length) openMapping(newGroups, true);
+    else normalGate();
+  }).catch(normalGate);
 } else {
-  applySettings(loadSettings());   // honors any previously-saved overrides
+  normalGate();
 }
 
 // ── Net worth card ────────────────────────────────────────────────────────────
@@ -2735,12 +2747,14 @@ if (wantMapping) {
     fetch('/api/ingest', {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: text})
       .then(r => r.json()).then(d => {
         if (d.ok) {
+          const newGroups = (d.groups || []).filter(g => !g.auto && !g.mapped);
           if (d.needs_current) { msgEl.textContent = d.summary || 'Loaded'; goEl.disabled = false; }
-          else if (d.groups && d.groups.length) {
-            // Sort the transactions before showing the dashboard.
+          else if (newGroups.length) {
+            // Only prompt for the net-new groups; already-sorted ones are kept.
             ov.classList.remove('open');
-            openMapping(d.groups, true);
+            openMapping(newGroups, true);
           } else {
+            // No new categories to sort — go straight to the dashboard.
             msgEl.textContent = (d.summary || ('Loaded ' + d.rows + ' rows')) + ' — refreshing…';
             setTimeout(() => location.reload(), 900);
           }
