@@ -1280,6 +1280,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <input type="number" id="setBonusThreshold" step="100" min="0"></div>
       <div class="hint">Paychecks above this are treated as one-time bonuses.</div>
     </div>
+    <div class="field inline">
+      <label for="setSeasonal">Seasonal projection?</label>
+      <label class="switch"><input type="checkbox" id="setSeasonal"><span class="slider"></span></label>
+    </div>
+    <div class="field" style="margin-top:-8px">
+      <div class="hint">When on, the year-end forecast lifts your remaining months using prior-year spending patterns. Off = flat run-rate from your YTD pace. Needs a prior year loaded.</div>
+    </div>
     <div class="section-label">Transaction mapping</div>
     <p class="msub">Sort your transaction groups into Spending, Savings &amp; Investing, or Income.</p>
     <div class="field">
@@ -1465,7 +1472,7 @@ function computePanel(prim, settings) {
   const sp_monthly = months_ytd ? spending/months_ytd : 0;
   const proj_spending_flat = spending + sp_monthly*months_remaining;
   let proj_spending_seasonal = proj_spending_flat;
-  if (rent>0 && prim.has_seasonality) {
+  if (rent>0 && prim.has_seasonality && settings.seasonal !== false) {
     const factor = prim.seasonal_factor;
     const ytd_nonrent = spending - rent*months_ytd;
     const ytd_nonrent_monthly = months_ytd ? ytd_nonrent/months_ytd : 0;
@@ -2303,7 +2310,7 @@ function loadSettings() {
   return Object.assign({}, SETTINGS_DEFAULTS, saved);
 }
 function sameAsDefaults(s) {
-  return ['rent','biweekly_deposit','k401_annual','receive_bonuses','bonus_threshold']
+  return ['rent','biweekly_deposit','k401_annual','receive_bonuses','bonus_threshold','seasonal']
     .every(k => s[k] === SETTINGS_DEFAULTS[k]);
 }
 function panelsFor(s) { return sameAsDefaults(s) ? PANELS_PY : computePanels(s); }
@@ -2317,6 +2324,7 @@ const elK401 = document.getElementById('setK401');
 const elBonus = document.getElementById('setBonus');
 const elBonusThreshold = document.getElementById('setBonusThreshold');
 const bonusThresholdField = document.getElementById('bonusThresholdField');
+const elSeasonal = document.getElementById('setSeasonal');
 
 function syncBonusVisibility() {
   bonusThresholdField.style.display = elBonus.checked ? '' : 'none';
@@ -2326,6 +2334,7 @@ function fillForm(s) {
   elBiweek.value = s.biweekly_deposit;
   elK401.value = s.k401_annual;
   elBonus.checked = !!s.receive_bonuses;
+  elSeasonal.checked = s.seasonal !== false;
   elBonusThreshold.value = s.bonus_threshold;
   syncBonusVisibility();
 }
@@ -2373,6 +2382,7 @@ saveBtn.addEventListener('click', () => {
     k401_annual: parseFloat(elK401.value) || 0,
     receive_bonuses: elBonus.checked,
     bonus_threshold: parseFloat(elBonusThreshold.value) || 0,
+    seasonal: elSeasonal.checked,
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   closeSettings();
@@ -3256,6 +3266,7 @@ def main(argv: list[str] | None = None) -> int:
             "k401_annual": args.k401_annual,
             "receive_bonuses": args.receive_bonuses,
             "bonus_threshold": args.bonus_threshold if args.bonus_threshold is not None else 0,
+            "seasonal": not args.no_seasonal,
         }
         with open(args.html, "w") as f:
             f.write(render_html(panels, settings, primitives,
