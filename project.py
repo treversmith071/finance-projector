@@ -346,9 +346,13 @@ def group_key(desc: str) -> str:
 
 
 def group_label(desc: str) -> str:
-    """Human-friendly title for a group card in the mapping screen."""
+    """Short, human-friendly title for a group card in the mapping screen."""
     k = group_key(desc)
     k = re.sub(r" #(\d{4})$", lambda mm: " …" + mm.group(1), k)
+    # Trim verbose bank phrasing so the meaningful part (incl. the …#### suffix)
+    # stays visible on the card instead of being truncated away.
+    k = k.replace("internet transfer ", "transfer ")
+    k = re.sub(r"\b(spending|savings) account\b", r"\1", k)
     return k[:1].upper() + k[1:] if k else k
 
 
@@ -1092,29 +1096,48 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .switch input:checked + .slider::before { transform:translateX(20px); }
   .modal-actions { display:flex; gap:10px; align-items:center; margin-top:24px; }
   /* Transaction mapping modal */
-  .modal.modal-wide { max-width:940px; }
-  .map-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .modal.modal-wide { max-width:1040px; max-height:90vh; overflow-y:auto; }
+  .map-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
   .map-col { display:flex; flex-direction:column; min-width:0; }
-  .map-col-head { display:flex; align-items:center; gap:7px; font-size:13px;
-                  font-weight:600; color:var(--text); margin-bottom:8px; }
-  .map-col-head .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-  .dot.spend { background:#ff8f6b; } .dot.save { background:#39d3bb; } .dot.income { background:#7c5cff; }
-  .map-drop { flex:1; min-height:320px; max-height:52vh; overflow-y:auto;
-              background:var(--bg); border:1px solid #262a36; border-radius:12px;
-              padding:8px; display:flex; flex-direction:column; gap:7px; transition:.12s; }
-  .map-drop.over { border-color:var(--accent); background:#191d2b; }
-  .map-card { background:var(--card); border:1px solid #2b2f3d; border-radius:9px;
-              padding:9px 11px; cursor:grab; user-select:none; }
+  .map-col-head { display:flex; align-items:center; gap:8px; font-size:14px;
+                  font-weight:600; color:var(--text); margin-bottom:10px; }
+  .map-col-head .dot { width:10px; height:10px; border-radius:50%; flex:none; }
+  .dot.spend { background:#ff5fa2; } .dot.save { background:#39d3bb; } .dot.income { background:#7c5cff; }
+  /* per-column running total */
+  .map-sum { display:flex; align-items:center; justify-content:space-between;
+             padding:11px 15px; border-radius:12px; border:1px solid; margin-bottom:11px; }
+  .map-sum .ms-count { font-size:13px; color:var(--muted); }
+  .map-sum .ms-total { font-size:21px; font-weight:700; letter-spacing:-.01em; }
+  .map-sum.spend { background:rgba(255,95,162,.07); border-color:rgba(255,95,162,.30); }
+  .map-sum.spend .ms-total { color:#ff5fa2; }
+  .map-sum.save { background:rgba(57,211,187,.07); border-color:rgba(57,211,187,.30); }
+  .map-sum.save .ms-total { color:#39d3bb; }
+  .map-sum.income { background:rgba(124,92,255,.08); border-color:rgba(124,92,255,.32); }
+  .map-sum.income .ms-total { color:#7c5cff; }
+  .map-drop { flex:1; min-height:120px; max-height:44vh; overflow-y:auto; overflow-x:hidden;
+              border-radius:12px; padding:3px; display:flex; flex-direction:column;
+              gap:9px; transition:.12s; }
+  .map-drop.over { background:#181c28; box-shadow:inset 0 0 0 1.5px var(--accent); }
+  .map-card { display:flex; align-items:center; gap:11px; background:var(--card);
+              border:1px solid #2b2f3d; border-left:3px solid #4a5061; border-radius:11px;
+              padding:11px 13px; cursor:grab; user-select:none; transition:.1s; }
+  .map-card:hover { border-color:#3a3f52; }
   .map-card:active { cursor:grabbing; }
   .map-card.dragging { opacity:.4; }
-  .map-card .mc-label { font-size:13px; color:var(--text); font-weight:600;
-              word-break:break-word; line-height:1.25; }
-  .map-card .mc-meta { font-size:11px; color:var(--muted); margin-top:3px; }
+  .map-drop[data-bucket=spending] .map-card { border-left-color:#ff5fa2; }
+  .map-drop[data-bucket=savings] .map-card { border-left-color:#39d3bb; }
+  .map-drop[data-bucket=income] .map-card { border-left-color:#7c5cff; }
+  .mc-grip { flex:none; color:#4a5061; display:flex; }
+  .mc-body { min-width:0; flex:1; }
+  .map-card .mc-label { font-size:13.5px; color:var(--text); font-weight:600;
+              line-height:1.3; display:-webkit-box; -webkit-line-clamp:2;
+              -webkit-box-orient:vertical; overflow:hidden; }
+  .map-card .mc-meta { font-size:11.5px; color:var(--muted); margin-top:2px; }
   .map-auto-note { color:var(--muted); font-size:12px; margin:0 0 10px; }
   .map-auto-list { display:flex; flex-wrap:wrap; gap:7px; }
   .map-auto-list .chip { background:var(--bg); border:1px solid #262a36; border-radius:20px;
               padding:5px 11px; font-size:12px; color:var(--muted); }
-  @media (max-width:720px){ .map-cols { grid-template-columns:1fr; } .map-drop { min-height:120px; } }
+  @media (max-width:720px){ .map-cols { grid-template-columns:1fr; } }
   .btn { border-radius:9px; padding:9px 18px; font-size:14px; font-weight:600;
          cursor:pointer; border:1px solid #262a36; }
   .btn-secondary { background:transparent; color:var(--muted); }
@@ -1315,14 +1338,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="map-cols">
       <div class="map-col">
         <div class="map-col-head"><span class="dot spend"></span>Spending</div>
+        <div class="map-sum spend" id="sum-spending"><span class="ms-count">0 txns</span><span class="ms-total">$0</span></div>
         <div class="map-drop" data-bucket="spending" id="col-spending"></div>
       </div>
       <div class="map-col">
         <div class="map-col-head"><span class="dot save"></span>Savings &amp; Investing</div>
+        <div class="map-sum save" id="sum-savings"><span class="ms-count">0 txns</span><span class="ms-total">$0</span></div>
         <div class="map-drop" data-bucket="savings" id="col-savings"></div>
       </div>
       <div class="map-col">
         <div class="map-col-head"><span class="dot income"></span>Income</div>
+        <div class="map-sum income" id="sum-income"><span class="ms-count">0 txns</span><span class="ms-total">$0</span></div>
         <div class="map-drop" data-bucket="income" id="col-income"></div>
       </div>
     </div>
@@ -2372,25 +2398,45 @@ document.getElementById('editMapping').addEventListener('click', () => {
 // reload. Venmo/gambling groups are auto-netted and shown read-only.
 const mapOverlay = document.getElementById('mappingOverlay');
 let mapDragEl = null;
-let mapFromIngest = false;   // opened right after a data import (page not yet refreshed)
+let mapReloadOnCancel = false;   // opened after a data load (page not yet refreshed)
+const MAP_GRIP = '<svg class="mc-grip" width="8" height="14" viewBox="0 0 8 14" aria-hidden="true">'
+  + '<g fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>'
+  + '<circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/>'
+  + '<circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/></g></svg>';
 function mapMoney(n) {
-  return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+  return (n < 0 ? '-$' : '+$') + Math.abs(Math.round(n)).toLocaleString();
 }
 function mapCard(g) {
   const el = document.createElement('div');
   el.className = 'map-card';
   el.draggable = true;
   el.dataset.key = g.key;
-  const lab = document.createElement('div'); lab.className = 'mc-label'; lab.textContent = g.label;
+  el.dataset.net = g.net;
+  el.dataset.count = g.count;
+  const body = document.createElement('div'); body.className = 'mc-body';
+  const lab = document.createElement('div'); lab.className = 'mc-label'; lab.textContent = g.label; lab.title = g.label;
   const meta = document.createElement('div'); meta.className = 'mc-meta';
   meta.textContent = g.count + (g.count === 1 ? ' txn · net ' : ' txns · net ') + mapMoney(g.net);
-  el.appendChild(lab); el.appendChild(meta);
+  body.appendChild(lab); body.appendChild(meta);
+  el.innerHTML = MAP_GRIP;
+  el.appendChild(body);
   el.addEventListener('dragstart', e => {
     mapDragEl = el; el.classList.add('dragging');
     try { e.dataTransfer.setData('text/plain', g.key); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
   });
   el.addEventListener('dragend', () => { el.classList.remove('dragging'); mapDragEl = null; });
   return el;
+}
+function updateSums() {
+  ['spending', 'savings', 'income'].forEach(b => {
+    let net = 0, count = 0;
+    document.querySelectorAll('#col-' + b + ' .map-card').forEach(c => {
+      net += parseFloat(c.dataset.net) || 0; count += parseInt(c.dataset.count) || 0;
+    });
+    const box = document.getElementById('sum-' + b);
+    box.querySelector('.ms-count').textContent = count + (count === 1 ? ' txn' : ' txns');
+    box.querySelector('.ms-total').textContent = mapMoney(net);
+  });
 }
 function renderMapping(groups) {
   ['spending', 'savings', 'income'].forEach(b => { document.getElementById('col-' + b).innerHTML = ''; });
@@ -2410,13 +2456,14 @@ function renderMapping(groups) {
     (document.getElementById('col-' + b) || document.getElementById('col-spending')).appendChild(mapCard(g));
   });
   document.getElementById('mapAuto').style.display = hasAuto ? '' : 'none';
+  updateSums();
 }
 document.querySelectorAll('.map-drop').forEach(zone => {
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('over'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('over'));
   zone.addEventListener('drop', e => {
     e.preventDefault(); zone.classList.remove('over');
-    if (mapDragEl) zone.appendChild(mapDragEl);
+    if (mapDragEl) { zone.appendChild(mapDragEl); updateSums(); }
   });
 });
 function collectMapping() {
@@ -2426,18 +2473,18 @@ function collectMapping() {
   });
   return m;
 }
-function openMapping(groups) {
-  if (groups) { mapFromIngest = true; renderMapping(groups); mapOverlay.classList.add('open'); return; }
-  mapFromIngest = false;
+function openMapping(groups, reloadOnCancel) {
+  mapReloadOnCancel = !!reloadOnCancel;
+  if (groups) { renderMapping(groups); mapOverlay.classList.add('open'); return; }
   fetch('/api/groups').then(r => r.json()).then(d => {
     renderMapping(d.groups || []); mapOverlay.classList.add('open');
   }).catch(() => {});
 }
 document.getElementById('cancelMapping').addEventListener('click', () => {
   mapOverlay.classList.remove('open');
-  // After an import the page still shows the pre-import data behind the modal —
-  // reload so the freshly-loaded (default-mapped) dashboard is shown.
-  if (mapFromIngest) location.reload();
+  // Opened right after a data load — the dashboard behind is stale/placeholder,
+  // so reload to move on (to the freshly-loaded data, then onboarding if needed).
+  if (mapReloadOnCancel) location.reload();
 });
 document.getElementById('doneMapping').addEventListener('click', () => {
   const btn = document.getElementById('doneMapping');
@@ -2506,17 +2553,21 @@ obFinish.addEventListener('click', () => {
     body: JSON.stringify(s)}).catch(() => {});
   obOverlay.classList.remove('open');
   applySettings(s);
-  if (wantMapping) openMapping();   // sort transactions after baseline setup
 });
 
-// Gate: onboard on a fresh setup unless the user already answered here.
-if (NEEDS_ONBOARDING && !hasSavedSettings()) {
+// Gate. When we arrived from a data load (?map=1), sort transactions FIRST; the
+// reload after Done/Cancel then falls through to onboarding if baselines are
+// still missing. Otherwise onboard (fresh setup) or just render.
+if (wantMapping) {
+  if (NEEDS_ONBOARDING && !hasSavedSettings()) renderAll(PANELS_PY);
+  else applySettings(loadSettings());
+  openMapping(null, true);
+} else if (NEEDS_ONBOARDING && !hasSavedSettings()) {
   obValidate();
   obOverlay.classList.add('open');
   renderAll(PANELS_PY);   // placeholder render behind the overlay
 } else {
   applySettings(loadSettings());   // honors any previously-saved overrides
-  if (wantMapping) openMapping();   // came from "Build dashboard" / import
 }
 
 // ── Net worth card ────────────────────────────────────────────────────────────
@@ -2708,7 +2759,7 @@ if (NEEDS_ONBOARDING && !hasSavedSettings()) {
           else if (d.groups && d.groups.length) {
             // Sort the transactions before showing the dashboard.
             ov.classList.remove('open');
-            openMapping(d.groups);
+            openMapping(d.groups, true);
           } else {
             msgEl.textContent = (d.summary || ('Loaded ' + d.rows + ' rows')) + ' — refreshing…';
             setTimeout(() => location.reload(), 900);
