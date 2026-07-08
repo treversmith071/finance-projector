@@ -1114,7 +1114,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .map-sum.save .ms-total { color:#39d3bb; }
   .map-sum.income { background:rgba(124,92,255,.08); border-color:rgba(124,92,255,.32); }
   .map-sum.income .ms-total { color:#7c5cff; }
-  .map-drop { flex:1; min-height:120px; max-height:44vh; overflow-y:auto; overflow-x:hidden;
+  .map-drop { flex:1; min-height:120px; max-height:58vh; overflow-y:auto; overflow-x:hidden;
               border-radius:12px; padding:3px; display:flex; flex-direction:column;
               gap:9px; transition:.12s; }
   .map-drop.over { background:#181c28; box-shadow:inset 0 0 0 1.5px var(--accent); }
@@ -1133,10 +1133,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               line-height:1.3; display:-webkit-box; -webkit-line-clamp:2;
               -webkit-box-orient:vertical; overflow:hidden; }
   .map-card .mc-meta { font-size:11.5px; color:var(--muted); margin-top:2px; }
-  .map-auto-note { color:var(--muted); font-size:12px; margin:0 0 10px; }
-  .map-auto-list { display:flex; flex-wrap:wrap; gap:7px; }
-  .map-auto-list .chip { background:var(--bg); border:1px solid #262a36; border-radius:20px;
-              padding:5px 11px; font-size:12px; color:var(--muted); }
   @media (max-width:720px){ .map-cols { grid-template-columns:1fr; } }
   .btn { border-radius:9px; padding:9px 18px; font-size:14px; font-weight:600;
          cursor:pointer; border:1px solid #262a36; }
@@ -1351,11 +1347,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="map-sum income" id="sum-income"><span class="ms-count">0 txns</span><span class="ms-total">$0</span></div>
         <div class="map-drop" data-bucket="income" id="col-income"></div>
       </div>
-    </div>
-    <div id="mapAuto" style="display:none">
-      <div class="section-label">Auto-handled (netted)</div>
-      <p class="map-auto-note">Venmo &amp; gambling net inflows against outflows automatically.</p>
-      <div class="map-auto-list" id="mapAutoList"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" id="cancelMapping">Cancel</button>
@@ -2440,22 +2431,11 @@ function updateSums() {
 }
 function renderMapping(groups) {
   ['spending', 'savings', 'income'].forEach(b => { document.getElementById('col-' + b).innerHTML = ''; });
-  const autoList = document.getElementById('mapAutoList');
-  autoList.innerHTML = '';
-  let hasAuto = false;
   (groups || []).forEach(g => {
-    if (g.auto) {
-      hasAuto = true;
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.textContent = g.label + ' · ' + mapMoney(g.net);
-      autoList.appendChild(chip);
-      return;
-    }
+    if (g.auto) return;   // Venmo/gambling are auto-netted — not shown or sortable
     const b = g.bucket && g.bucket !== 'auto' ? g.bucket : (g.default_bucket || 'spending');
     (document.getElementById('col-' + b) || document.getElementById('col-spending')).appendChild(mapCard(g));
   });
-  document.getElementById('mapAuto').style.display = hasAuto ? '' : 'none';
   updateSums();
 }
 document.querySelectorAll('.map-drop').forEach(zone => {
